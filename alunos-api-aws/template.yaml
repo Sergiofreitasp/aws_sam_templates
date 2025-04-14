@@ -1,0 +1,116 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  alunos-api-aws
+
+  Sample SAM Template for alunos-api-aws
+
+
+Globals:
+  Function:
+    Timeout: 15
+    MemorySize: 128
+    LoggingConfig:
+      LogFormat: JSON
+Resources:
+
+  BucketUploadImageEcommerce:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::AccountId}-${AWS::Region}-upload-image-ecommerce"
+    
+  CreatePresignedUrlFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: presignedUrl/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Architectures:
+      - x86_64
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref BucketUploadImageEcommerce
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref BucketUploadImageEcommerce
+      Events:
+        ApiEcommerce:
+          Type: Api
+          Properties:
+            Path: /presigned-url
+            Method: get
+
+  CategorizeImageFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: categorize/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Architectures:
+      - x86_64
+      Environment:
+        Variables:
+          SQS_URL: !Ref DetectLabelQueue
+      Policies:
+        - RekognitionDetectOnlyPolicy: {}
+        - S3CrudPolicy:
+            BucketName: !Ref BucketUploadImageEcommerce
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt DetectLabelQueue.QueueName
+
+  DetectLabelQueue:
+    Type: AWS::SQS::Queue
+
+  GenerateContentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: generateContent/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          MODEL_ID: us.anthropic.claude-3-5-haiku-20241022-v1:0
+          PROMPT_TITLE: "Considere ser um especialista em marketing e copywrite, escreva um titulo chamativo para meu proeduto com base nas etiqutas que irei disponibilizar a seguir. O resultado precisa ser somente o titulo. Deixe claro o que é o produto em seu titulo. Etiquetas: "
+          PROMPT_DESCRIPTION: "Analise a imagem e gere um titulo com base nas labels(etiquetas) que você vai receber e gere uma descrição dos beneficios e qualidades do produto,seja especifico sobre o produto e chamativo, você vai precisar assumir o papel de especialista de marketing digital e direitos autorais, essa descrição precisa ser em português pt br"
+          TABLE_NAME: !Ref BedrockMetadataImagesS3Table
+          SNS_TOPIC_ARN: !Ref ContentDeliveryNotificationTopic
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: "*"
+        - SQSPollerPolicy:
+            QueueName: !GetAtt DetectLabelQueue.QueueName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BedrockMetadataImagesS3Table
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt ContentDeliveryNotificationTopic.TopicName    
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt DetectLabelQueue.Arn
+  
+  BedrockMetadataImagesS3Table:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: id
+        Type: String
+  
+  ContentDeliveryNotificationTopic:
+    Type: AWS::SNS::Topic
+
+Outputs:
+  ApiEcomerce:
+    Description: API Gateway endpoint URL for Prod stage for function
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/presigned-url/"
+  CreatePresignedUrlFunction:
+    Description: Lambda Function ARN
+    Value: !GetAtt CreatePresignedUrlFunction.Arn
+  CreatePresignedUrlFunctionIamRole:
+    Description: Implicit IAM Role created for function
+    Value: !GetAtt CreatePresignedUrlFunction.Arn
